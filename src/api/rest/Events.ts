@@ -9,7 +9,7 @@ import type {
 } from '@/api/rest/types/Event'
 
 const DEFAULT_CONFIG: ApiConfig = {
-  baseURL: 'http://wisetask.ru:8085/api'
+  baseURL: 'https://wisetask.ru/api'
 }
 
 export function useEventsApi(config: Partial<ApiConfig> = {}): EventsApiMethods {

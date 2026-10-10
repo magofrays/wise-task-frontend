@@ -95,9 +95,9 @@ export default defineComponent({
     const { activeTask } = storeToRefs(useTaskStore());
     const { onResult } = useQuery(GET_TASK, { id: props.id });
     const token = localStorage.getItem("token");
-    const userInfo = getUserFromToken(token);          // ActiveUserInfo | null
+    const userInfo = getUserFromToken(token);          
     const NULL_UUID = "00000000-0000-0000-0000-000000000000";
-    const authorId = userInfo?.id ?? NULL_UUID;        // строка, не null
+    const authorId = userInfo?.id ?? NULL_UUID;        
     onResult((response) => {
       if (response.data) {
         activeTask.value = response.data.getTask;
