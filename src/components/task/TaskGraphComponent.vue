@@ -104,21 +104,377 @@
         </v-navigation-drawer>
     </v-layout>
 </template>
+<script setup lang="ts">
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { SOLVE_TASK_GRAPH } from "@/api/Mutations";
+import { GET_GRAPH_BY_ID, GET_TASK, GET_STATISTIC } from "@/api/Queries";
+import { StatisticRequestInput, StatisticResponse } from "@/api/Statistic";
+import { useTaskStore } from "@/store/task";
+import { useMutation, useQuery } from "@vue/apollo-composable";
+import { storeToRefs } from "pinia";
+import { PluginResult, Graph as GraphType } from "@/__generated__/graphql";
+import Graph from "@/features/graph/ui/graph/Graph.vue";
+import { useNodeStore } from "@/features/graph/stores/nodes";
+import { convertToGqlFormat } from "@/features/graph/lib/helpers/GqlFormatter";
+import * as vNG from "v-network-graph";
+import undirectGraphConfigs, {
+  directGraphConfigs,
+} from "@/components/graph/network/helper/graphConfig";
+import { useEventsApi } from "@/api/rest/Events";
+import { getUserFromToken } from "@/entities/user/lib/getUserFromToken";
 
-<script setup
-    lang="ts">
-    import { ref, computed, watch, onMounted, onUnmounted } from "vue";
-    import { SOLVE_TASK_GRAPH } from "@/api/Mutations"; import { GET_GRAPH_BY_ID, GET_TASK, GET_STATISTIC } from "@/api/Queries";
-    import { StatisticRequestInput, StatisticResponse } from "@/api/Statistic"; import { useTaskStore } from "@/store/task";
-    import { useMutation, useQuery } from "@vue/apollo-composable";
-    import { storeToRefs } from "pinia"; import { PluginResult, Graph as GraphType } from "@/__generated__/graphql";
-    import Graph from "@/features/graph/ui/graph/Graph.vue"; import { useNodeStore } from "@/features/graph/stores/nodes";
-    import { convertToGqlFormat } from "@/features/graph/lib/helpers/GqlFormatter"; import * as vNG from "v-network-graph";
-    import undirectGraphConfigs, { directGraphConfigs, } from "@/components/graph/network/helper/graphConfig";
-    import { useEventsApi } from "@/api/rest/Events";
-    const props = defineProps({ id: String, onCorrectSolution: { type: Function, default: null, }, });
-    const emit = defineEmits(["isCorrect"]); const taskStore = useTaskStore(); const nodeStore = useNodeStore(); const { activeTask } = storeToRefs(taskStore); /* |-------------------------------------------------------------------------- | EVENTS API |-------------------------------------------------------------------------- */ const eventsApi = useEventsApi(); const token = localStorage.getItem("token"); if (token) { eventsApi.setToken(token); } const sendEvent = async (eventType: string, eventValue: string, entityId: number = 0,) => { try { if (!activeTask.value?.id) return; await eventsApi.createEvent({ taskId: activeTask.value.id, eventType, eventEntityId: entityId, eventValue, }); } catch (e) { console.error("Event error:", eventType, e); } }; /* |-------------------------------------------------------------------------- | STATE |-------------------------------------------------------------------------- */ const successAlert = ref(false); const errorAlert = ref(false); const result = ref<PluginResult[]>([]); const extraGraph = ref<null | GraphType>(null); const drawer = ref(true); const drawerWidth = ref(600); const statistic = ref<StatisticResponse | null>(null); const statisticLoading = ref(false); /* |-------------------------------------------------------------------------- | DRAWER |-------------------------------------------------------------------------- */ const updateDrawerWidth = () => { drawerWidth.value = Math.max(600, window.innerWidth / 2); }; onMounted(() => { updateDrawerWidth(); window.addEventListener("resize", updateDrawerWidth); }); onUnmounted(() => { window.removeEventListener("resize", updateDrawerWidth); }); /* |-------------------------------------------------------------------------- | STATISTICS |-------------------------------------------------------------------------- */ const loadStatisticForTask = (taskId: string) => { if (!taskId) return; statisticLoading.value = true; const request: StatisticRequestInput = { type: "SUCCESS_RATE", scope: "TASK", event_type: "task_success,task_wrong", task_id: taskId, }; const { onResult } = useQuery(GET_STATISTIC, { request }, { fetchPolicy: "cache-first" }); onResult((result) => { if (result.data?.getStatistic) { statistic.value = result.data.getStatistic; } statisticLoading.value = false; }); }; /* |-------------------------------------------------------------------------- | HELPERS |-------------------------------------------------------------------------- */ const getColorCode = (color: string) => { switch (color) { case "RED": return "#ff0000"; case "GREEN": return "#00ff00"; case "BLUE": return "#0000ff"; case "GRAY": default: return "#808080"; } }; const formatDescription = (description: string) => { if (!description) return ""; const urlRegex = /(https?:\/\/[^\s]+)/g; return description.replace(urlRegex, (url) => { const escapedUrl = url.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); return `<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer">${escapedUrl}</a>`; }); }; const formatPercentage = (value: number) => { return `${value.toFixed(1)}%`; }; /* |-------------------------------------------------------------------------- | GRAPH DATA |-------------------------------------------------------------------------- */ const graphData = computed(() => { if (!extraGraph.value) { return { nodes: {}, edges: {}, layouts: { nodes: {}, }, }; } const nodes: vNG.Nodes = {}; const layouts: vNG.Layouts = { nodes: {}, }; extraGraph.value.vertexList.forEach((vertex) => { if (!vertex) return; nodes[vertex.id] = { label: String(vertex.label), weight: vertex.weight, color: vertex.color, xCoordinate: vertex.xCoordinate, yCoordinate: vertex.yCoordinate, }; layouts.nodes[vertex.id] = { x: vertex.xCoordinate, y: vertex.yCoordinate, }; }); const edges: vNG.Edges = {}; extraGraph.value.edgeList.forEach((edge, index) => { if (!edge) return; edges[`edge${index}`] = { source: String(edge.source), target: String(edge.target), label: edge.label, weight: edge.weight, color: edge.color, }; }); return { nodes, edges, layouts, }; }); /* |-------------------------------------------------------------------------- | GRAPH CONFIGS |-------------------------------------------------------------------------- */ const graphConfigs = computed(() => { const config = extraGraph.value?.isDirect ? directGraphConfigs : undirectGraphConfigs; return { ...config, node: { ...config.node, color: (node: any) => { const vertex = extraGraph.value?.vertexList.find((v) => v?.id === node.id); return getColorCode(vertex?.color || "GRAY"); }, label: { ...config.node?.label, color: "#000000", }, }, edge: { ...config.edge, color: (edge: any) => { const edgeData = extraGraph.value?.edgeList.find((e) => e?.source === edge.source && e?.target === edge.target); return getColorCode(edgeData?.color || "GRAY"); }, }, }; }); /* |-------------------------------------------------------------------------- | TASK |-------------------------------------------------------------------------- */ const { onResult: onTaskResult } = useQuery(GET_TASK, { id: props.id, }); onTaskResult((response) => { if (response.data) { activeTask.value = response.data.getTask; sendEvent("open_task", `Пользователь открыл задачу ${response.data.getTask.id}`); } }); /* |-------------------------------------------------------------------------- | LOAD GRAPH |-------------------------------------------------------------------------- */ watch(activeTask, (newValue) => { if (!newValue?.graph?.id) return; const { onResult: onGraphResult } = useQuery(GET_GRAPH_BY_ID, { id: newValue.graph.id, }); onGraphResult((response) => { extraGraph.value = response.data.getGraphById; }); if (newValue?.id) { loadStatisticForTask(newValue.id); } }, { immediate: true, }); /* |-------------------------------------------------------------------------- | GRAPH EVENTS |-------------------------------------------------------------------------- */ const previousGraphState = ref({ nodes: [] as string[], edges: [] as string[], }); watch(() => convertToGqlFormat(nodeStore), (graph) => { if (!graph) return; /* |-------------------------------------------------------------------------- | NODES |-------------------------------------------------------------------------- */ const currentNodeIds = graph.vertexList?.map((v: any) => String(v.id)) || []; const addedNodes = currentNodeIds.filter((id) => !previousGraphState.value.nodes.includes(id)); const removedNodes = previousGraphState.value.nodes.filter((id) => !currentNodeIds.includes(id)); addedNodes.forEach((id) => { sendEvent("node_add", `Добавлена нода ${id}`); }); removedNodes.forEach((id) => { sendEvent("node_remove", `Удалена нода ${id}`); }); /* |-------------------------------------------------------------------------- | EDGES |-------------------------------------------------------------------------- */ const currentEdgeIds = graph.edgeList?.map((e: any) => `${e.source}-${e.target}`) || []; const addedEdges = currentEdgeIds.filter((id) => !previousGraphState.value.edges.includes(id)); const removedEdges = previousGraphState.value.edges.filter((id) => !currentEdgeIds.includes(id)); addedEdges.forEach((id) => { sendEvent("edge_add", `Добавлено ребро ${id}`); }); removedEdges.forEach((id) => { sendEvent("edge_remove", `Удалено ребро ${id}`); }); previousGraphState.value = { nodes: [...currentNodeIds], edges: [...currentEdgeIds], }; }, { deep: false, }); /* |-------------------------------------------------------------------------- | SOLVE TASK |-------------------------------------------------------------------------- */ const { mutate: solveTaskMutation } = useMutation(SOLVE_TASK_GRAPH); const solveTask = async () => { const graph = convertToGqlFormat(nodeStore); graph.id = self.crypto.randomUUID(); const request = { solution: { id: self.crypto.randomUUID(), taskId: activeTask.value.id, authorId: "00000000-0000-0000-0000-000000000000", graph, }, }; try { /* |-------------------------------------------------------------------------- | SUBMIT |-------------------------------------------------------------------------- */ sendEvent("submit", "Пользователь отправил решение"); const response = await solveTaskMutation(request); if (!response?.data) { console.error("No data received"); return; } const { isCorrect, pluginResults, } = response.data.solveTaskGraph; /* |-------------------------------------------------------------------------- | SUCCESS |-------------------------------------------------------------------------- */ if (isCorrect) { sendEvent("task_success", "Задача решена успешно"); successAlert.value = true; errorAlert.value = false; emit("isCorrect", true); props.onCorrectSolution?.(); } else { /* |-------------------------------------------------------------------------- | WRONG |-------------------------------------------------------------------------- */ sendEvent("task_wrong", "Задача решена неверно"); errorAlert.value = true; successAlert.value = false; const incorrectResults = pluginResults.filter((item: PluginResult) => !item.isCorrect); result.value = activeTask.value.isHiddenMistake ? [incorrectResults[0]] : incorrectResults; result.value = result.value.map((item) => ({ ...item, mistakeText: activeTask.value.condition.find((element: any) => element.pluginId === item.pluginId)?.mistakeText || "", })); } } catch (error) { console.error("Error solving task:", error); errorAlert.value = true; successAlert.value = false; } }; </script>
+const props = defineProps({
+  id: String,
+  onCorrectSolution: {
+    type: Function,
+    default: null,
+  },
+});
 
+const emit = defineEmits(["isCorrect"]);
+
+const taskStore = useTaskStore();
+const nodeStore = useNodeStore();
+const { activeTask } = storeToRefs(taskStore);
+
+
+const eventsApi = useEventsApi();
+const token = localStorage.getItem("token");
+const userInfo = getUserFromToken(token)
+const NULL_UUID = "00000000-0000-0000-0000-000000000000";
+const authorId = userInfo?.id ?? NULL_UUID
+
+if (token) {
+  eventsApi.setToken(token);
+}
+
+const sendEvent = async (
+  eventType: string,
+  eventValue: string,
+  entityId: number = 0,
+) => {
+  try {
+    if (!activeTask.value?.id) return;
+    await eventsApi.createEvent({
+      taskId: activeTask.value.id,
+      eventType,
+      eventEntityId: entityId,
+      eventValue,
+    });
+  } catch (e) {
+    console.error("Event error:", eventType, e);
+  }
+};
+
+
+const successAlert = ref(false);
+const errorAlert = ref(false);
+const result = ref<PluginResult[]>([]);
+const extraGraph = ref<null | GraphType>(null);
+const drawer = ref(true);
+const drawerWidth = ref(600);
+const statistic = ref<StatisticResponse | null>(null);
+const statisticLoading = ref(false);
+
+const updateDrawerWidth = () => {
+  drawerWidth.value = Math.max(600, window.innerWidth / 2);
+};
+
+onMounted(() => {
+  updateDrawerWidth();
+  window.addEventListener("resize", updateDrawerWidth);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("resize", updateDrawerWidth);
+});
+
+const loadStatisticForTask = (taskId: string) => {
+  if (!taskId) return;
+
+  statisticLoading.value = true;
+
+  const request: StatisticRequestInput = {
+    type: "SUCCESS_RATE",
+    scope: "TASK",
+    event_type: "task_success,task_wrong",
+    task_id: taskId,
+  };
+
+  const { onResult } = useQuery(
+    GET_STATISTIC,
+    { request },
+    { fetchPolicy: "cache-first" },
+  );
+
+  onResult((result) => {
+    if (result.data?.getStatistic) {
+      statistic.value = result.data.getStatistic;
+    }
+    statisticLoading.value = false;
+  });
+};
+
+const getColorCode = (color: string) => {
+  switch (color) {
+    case "RED":
+      return "#ff0000";
+    case "GREEN":
+      return "#00ff00";
+    case "BLUE":
+      return "#0000ff";
+    case "GRAY":
+    default:
+      return "#808080";
+  }
+};
+
+const formatDescription = (description: string) => {
+  if (!description) return "";
+
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+  return description.replace(urlRegex, (url) => {
+    const escapedUrl = url
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+    return `<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer">${escapedUrl}</a>`;
+  });
+};
+
+const formatPercentage = (value: number) => {
+  return `${value.toFixed(1)}%`;
+};
+
+
+const graphData = computed(() => {
+  if (!extraGraph.value) {
+    return {
+      nodes: {},
+      edges: {},
+      layouts: {
+        nodes: {},
+      },
+    };
+  }
+
+  const nodes: vNG.Nodes = {};
+  const layouts: vNG.Layouts = { nodes: {} };
+
+  extraGraph.value.vertexList.forEach((vertex) => {
+    if (!vertex) return;
+    nodes[vertex.id] = {
+      label: String(vertex.label),
+      weight: vertex.weight,
+      color: vertex.color,
+      xCoordinate: vertex.xCoordinate,
+      yCoordinate: vertex.yCoordinate,
+    };
+    layouts.nodes[vertex.id] = {
+      x: vertex.xCoordinate,
+      y: vertex.yCoordinate,
+    };
+  });
+
+  const edges: vNG.Edges = {};
+  extraGraph.value.edgeList.forEach((edge, index) => {
+    if (!edge) return;
+    edges[`edge${index}`] = {
+      source: String(edge.source),
+      target: String(edge.target),
+      label: edge.label,
+      weight: edge.weight,
+      color: edge.color,
+    };
+  });
+
+  return { nodes, edges, layouts };
+});
+
+
+const graphConfigs = computed(() => {
+  const config = extraGraph.value?.isDirect
+    ? directGraphConfigs
+    : undirectGraphConfigs;
+
+  return {
+    ...config,
+    node: {
+      ...config.node,
+      color: (node: any) => {
+        const vertex = extraGraph.value?.vertexList.find(
+          (v) => v?.id === node.id,
+        );
+        return getColorCode(vertex?.color || "GRAY");
+      },
+      label: {
+        ...config.node?.label,
+        color: "#000000",
+      },
+    },
+    edge: {
+      ...config.edge,
+      color: (edge: any) => {
+        const edgeData = extraGraph.value?.edgeList.find(
+          (e) => e?.source === edge.source && e?.target === edge.target,
+        );
+        return getColorCode(edgeData?.color || "GRAY");
+      },
+    },
+  };
+});
+
+
+const { onResult: onTaskResult } = useQuery(GET_TASK, {
+  id: props.id,
+});
+
+onTaskResult((response) => {
+  if (response.data) {
+    activeTask.value = response.data.getTask;
+    sendEvent(
+      "open_task",
+      `Пользователь открыл задачу ${response.data.getTask.id}`,
+    );
+  }
+});
+
+
+watch(
+  activeTask,
+  (newValue) => {
+    if (!newValue?.graph?.id) return;
+
+    const { onResult: onGraphResult } = useQuery(GET_GRAPH_BY_ID, {
+      id: newValue.graph.id,
+    });
+
+    onGraphResult((response) => {
+      extraGraph.value = response.data.getGraphById;
+    });
+
+    if (newValue?.id) {
+      loadStatisticForTask(newValue.id);
+    }
+  },
+  { immediate: true },
+);
+
+
+const previousGraphState = ref({
+  nodes: [] as string[],
+  edges: [] as string[],
+});
+
+watch(
+  () => convertToGqlFormat(nodeStore),
+  (graph) => {
+    if (!graph) return;
+
+
+    const currentNodeIds =
+      graph.vertexList?.map((v: any) => String(v.id)) || [];
+    const addedNodes = currentNodeIds.filter(
+      (id) => !previousGraphState.value.nodes.includes(id),
+    );
+    const removedNodes = previousGraphState.value.nodes.filter(
+      (id) => !currentNodeIds.includes(id),
+    );
+
+    addedNodes.forEach((id) => {
+      sendEvent("node_add", `Добавлена нода ${id}`);
+    });
+    removedNodes.forEach((id) => {
+      sendEvent("node_remove", `Удалена нода ${id}`);
+    });
+
+    const currentEdgeIds =
+      graph.edgeList?.map((e: any) => `${e.source}-${e.target}`) || [];
+    const addedEdges = currentEdgeIds.filter(
+      (id) => !previousGraphState.value.edges.includes(id),
+    );
+    const removedEdges = previousGraphState.value.edges.filter(
+      (id) => !currentEdgeIds.includes(id),
+    );
+
+    addedEdges.forEach((id) => {
+      sendEvent("edge_add", `Добавлено ребро ${id}`);
+    });
+    removedEdges.forEach((id) => {
+      sendEvent("edge_remove", `Удалено ребро ${id}`);
+    });
+
+    previousGraphState.value = {
+      nodes: [...currentNodeIds],
+      edges: [...currentEdgeIds],
+    };
+  },
+  { deep: false },
+);
+
+const { mutate: solveTaskMutation } = useMutation(SOLVE_TASK_GRAPH);
+
+const solveTask = async () => {
+  const graph = convertToGqlFormat(nodeStore);
+  graph.id = self.crypto.randomUUID();
+
+  const request = {
+    solution: {
+      id: self.crypto.randomUUID(),
+      taskId: activeTask.value.id,
+      authorId: authorId, // На бэкенде определяется jwt пользователя
+      graph,
+    },
+  };
+
+  try {
+    sendEvent("submit", "Пользователь отправил решение");
+
+    const response = await solveTaskMutation(request);
+
+    if (!response?.data) {
+      console.error("No data received");
+      return;
+    }
+
+    const { isCorrect, pluginResults } = response.data.solveTaskGraph;
+
+    if (isCorrect) {
+      sendEvent("task_success", "Задача решена успешно");
+      successAlert.value = true;
+      errorAlert.value = false;
+      emit("isCorrect", true);
+      props.onCorrectSolution?.();
+    } else {
+      sendEvent("task_wrong", "Задача решена неверно");
+      errorAlert.value = true;
+      successAlert.value = false;
+
+      const incorrectResults = pluginResults.filter(
+        (item: PluginResult) => !item.isCorrect,
+      );
+
+      result.value = activeTask.value.isHiddenMistake
+        ? [incorrectResults[0]]
+        : incorrectResults;
+
+      result.value = result.value.map((item) => ({
+        ...item,
+        mistakeText:
+          activeTask.value.condition.find(
+            (element: any) => element.pluginId === item.pluginId,
+          )?.mistakeText || "",
+      }));
+    }
+  } catch (error) {
+    console.error("Error solving task:", error);
+    errorAlert.value = true;
+    successAlert.value = false;
+  }
+};
+</script>
 <style scoped>
 .drawer-toggle-btn {
     position: absolute;
